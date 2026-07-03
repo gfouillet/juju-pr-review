@@ -72,7 +72,41 @@ testable. Check:
 - Interfaces removed from a facade/service reflect genuinely deleted
   dependencies, not accidentally orphaned methods
 
-### 6. Concurrency rules (if goroutines are introduced)
+### 7. Adjacent code path impact (blast radius)
+
+This is the most commonly missed review failure mode: a change is correct in the
+files it touches, but breaks callers or consumers in files the PR does not
+modify. Treat this as your highest-value check.
+
+Identify all callers and consumers of changed functions, interfaces, and shared
+state:
+
+- Use code search (grep, semble, or equivalent) to find every call site of any
+  changed or removed function/method.
+- If an interface was modified (new method, removed method, signature change),
+  enumerate every implementation of that interface — not just the ones in the
+  PR diff.
+- If a shared argument struct was extended (e.g. `CommitHookChangesArg`),
+  verify that all callers that construct or pass that struct still compile and
+  behave correctly with the new fields.
+- If a DB schema migration is involved, check that all readers/writers of the
+  affected tables still work — including code in sibling packages that share
+  the same `state` tables.
+- If a configuration key, environment variable, or YAML field was changed,
+  verify all consumers across the codebase.
+
+For each potential breakage found in untouched files:
+
+- Flag it as **Critical** — a broken call site in unmodified code is a
+  correctness bug that will surface at runtime, not at compile time (Go
+  interfaces can hide missing methods).
+- Quote the exact call site and explain why it breaks.
+- Suggest the correction (update the caller, add a shim, revert the change).
+
+If a change is internal to a single package with no external callers, say
+PASS explicitly — do not leave this check silent.
+
+### 8. Concurrency rules (if goroutines are introduced)
 
 If the PR introduces goroutines or background work, verify:
 - `context.Context` is propagated and cancellation is honoured
