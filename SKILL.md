@@ -19,6 +19,36 @@ focused on a different dimension of quality, then merges their findings into a
 single report. The review is done entirely from the local checkout — no large
 code diffs are fetched from GitHub.
 
+## Hard Rules
+
+- Read-only GitHub behavior only. No PR comments, no review submission, no
+  label changes, no branch pushes, no merges.
+- `gh` is allowed for reads only. Never use it for any write action.
+- All QA execution must be local: LXD or MicroK8s only.
+- Never bootstrap on a public cloud. If the PR template contains cloud-specific
+  QA steps, skip them and report the skip explicitly.
+- Do not claim QA passed if any required local step was skipped, failed, or
+  left ambiguous.
+- If cleanup fails, report that as a finding.
+
+## Input Contract
+
+- Expected input: a GitHub PR URL, a PR number, or — if no argument is given —
+  the current branch.
+- If the input is a URL, parse it with
+  [`scripts/parse_pr_url.py`](./scripts/parse_pr_url.py) to extract `owner`,
+  `repo`, and `pr_number`.
+- If no PR number was given, try the current branch: run `gh pr view` without
+  a number and let `gh` infer it.
+- If `gh` can't find a PR, fall back to reading `git log --oneline -5` and
+  `git diff --name-only origin/HEAD...HEAD` to understand what changed.
+- If the repository is not available locally, say so and either locate another
+  local checkout that matches the PR repository or ask before doing any
+  networked read-only fetch or clone.
+- **Missing or vague PR description is a finding.** If the PR description is
+  missing, vague, or does not explain the problem being solved, flag it
+  explicitly in the review.
+
 ## Configuration
 
 Check whether `~/.config/juju-pr-review/config.sh` exists.
@@ -41,21 +71,26 @@ Use `$JUJU_REVIEW_REPORTS` as the report output directory throughout.
 
 ## Review Lenses
 
-Six lenses are available. Present this menu and confirm which to use.
-The default (L1+L2+L3) is what most reviews need; offer L4, L5, and L6 as
-opt-in additions when the PR touches tests, DB code, or channel/goroutine code.
+Seven lenses are available. Present this menu and confirm which to use.
+The default (L1+L2+L3) is what most reviews need; offer L4, L5, L6, and L7 as
+opt-in additions when the PR touches tests, DB code, concurrency, or needs
+behavioral validation.
 
 | ID | Lens | Focus | Default |
 |----|------|-------|:-------:|
-| L1 | Architecture alignment | Layer boundaries, import rules, transaction scope | on |
+| L1 | Architecture alignment | Layer boundaries, import rules, transaction scope, adjacent code path impact | on |
 | L2 | Go idioms | Error handling, naming, interfaces, context, godoc | on |
 | L3 | Juju style & idioms | sqlair patterns, DDD conventions, test structure, gci | on |
 | L4 | Test coverage | Edge cases, missing scenarios, stress candidates | off |
 | L5 | Database & performance | N+1 queries, bulk ops, chunking, transaction scope | off |
 | L6 | Synchronization & concurrency | Channel lifecycle, goroutine safety, worker shutdown, race conditions | off |
+| L7 | QA execution | Local LXD/MicroK8s validation, build, controller lifecycle | off |
 
 Ask the user which lenses to activate, or proceed with the default (L1+L2+L3)
 if they want to get started quickly.
+
+When L7 is activated, **start it first** — QA is the longest-running step and
+its results inform the rest of the review.
 
 ## Workflow
 
@@ -78,6 +113,24 @@ From the file list, identify:
 - What pattern the PR is implementing (new feature, refactor, bug fix)
 - Any predecessor PRs mentioned in the description that establish the pattern
 
+### Step 1.5 — Understand the change before judging it
+
+Read the PR description, the diff, and the touched code paths together. Do not
+spawn review agents until you can answer these questions:
+
+- What is the **claimed problem** the PR says it solves?
+- What is the **actual behavior being changed**?
+- What is the **scope** of the fix — is it smaller or broader than necessary?
+- Does the **implementation match the stated intent**?
+
+If the PR description is missing, vague, or does not explain the problem, flag
+it as a finding (see Input Contract). If there is a mismatch between the
+description and what the code actually does, note it — it will be passed to
+all subagents as context so they can verify alignment.
+
+The output of this step is a short "change understanding" summary that is
+included in every subagent prompt.
+
 ### Step 2 — Spawn parallel review agents
 
 Spawn one agent per selected lens **in the same turn** (parallel). Each agent:
@@ -89,9 +142,10 @@ Spawn one agent per selected lens **in the same turn** (parallel). Each agent:
 Pass each agent:
 1. The PR's file list (from step 1)
 2. The PR description / purpose
-3. The base branch (e.g. `4.0`) so it can compare patterns
-4. The path to its lens reference file
-5. Which AGENTS.md files to read (see below)
+3. The "change understanding" summary (from step 1.5)
+4. The base branch (e.g. `4.0`) so it can compare patterns
+5. The path to its lens reference file
+6. Which AGENTS.md files to read (see below)
 
 **AGENTS.md files to give each agent** (paths relative to the repo root):
 - `AGENTS.architecture-rules.md` — layering, import rules, concurrency rules
@@ -108,6 +162,7 @@ Pass each agent:
 | L4   | `references/lens-test-coverage.md` |
 | L5   | `references/lens-db-perf.md` |
 | L6   | `references/lens-concurrency.md` |
+| L7   | `references/lens-qa.md` |
 
 Each reference file contains the focused checklist and agent prompt for that
 lens. Read it before composing the subagent prompt.
@@ -172,6 +227,21 @@ and the overall verdict. E.g. "LGTM with requested changes" or
 
 ---
 
+## QA
+
+<Only include if L7 was run. Omit the section entirely if L7 was not activated.>
+
+**Environment:** LXD | MicroK8s
+**Steps run:** <count>
+**Steps skipped:** <count> (list each with reason)
+**Result:** passed | failed | partial | not run
+**Evidence:**
+  - <step description>: <pass/fail> — <key output or error>
+  - ...
+**Cleanup:** complete | failed (<error>)
+
+---
+
 ## Architecture Alignment
 
 <Only include if L1 was run. A table of key architectural checks with PASS/FAIL.>
@@ -223,10 +293,28 @@ and suggest a fix.>
 
 ---
 
+## Open Questions
+
+<Only include genuinely unresolved points that need the author's input. Omit
+the section entirely if there are none.>
+
+- <Question about an assumption the PR makes that is not confirmed by the code
+  or tests>
+- <Question about a design decision where the reviewer sees alternatives>
+
+---
+
 ## Finding Summary
 
 | ID | File | Line | Severity | Topic |
 |----|------|------|----------|-------|
 | C1 | `file.go` | 42 | Critical | ... |
 | M1 | `file.go` | 99 | Major | ... |
+
+---
+
+## Final Verdict
+
+**Verdict:** approve-ready | needs changes | blocked by missing clarity
+**Justification:** <one sentence>
 ```
