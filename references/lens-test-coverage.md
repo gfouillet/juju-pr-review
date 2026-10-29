@@ -50,14 +50,38 @@ For each returned error condition in new code, check:
 - Errors that wrap sentinel errors (`domain/*/errors`) should be tested with
   `c.Assert(err, tc.ErrorIs, SentinelErr)`, not just `tc.ErrorIsNil`
 
-### 4. Concurrency and mutation (race conditions)
+### 4. Tool-contract edge cases (for `scripts/`, `cmd/`, and other tool code)
+
+When the PR adds or changes a standalone tool (a linter, generator,
+rewriter, or anything under `scripts/` or `cmd/`):
+
+- **The tool's own stated contract is a correctness invariant.** Read its
+  docs, README, or `doc.go` for explicit claims — "non-reconstructable SQL
+  is reported, not skipped", "exits non-zero on violations", "fails
+  loudly" — then hunt for an input where the implementation silently
+  violates the claim. A tool that skips what it promised to report is a
+  **Major** at minimum: the gap is invisible in normal use.
+- **Attack every heuristic.** Sniffers based on identifier names or call
+  shapes misclassify wrapped or dynamic forms — e.g. a context-argument
+  check that recognises a bare `ctx` but not
+  `context.WithTimeout(parent, d)`. For each heuristic, ask: what common
+  shape does it misclassify, and is that failure *silent* (input dropped)
+  or *reported* (skip recorded with a reason)? The silent class is the
+  bug. (This exact failure shipped in PR #23701: `looksLikeContext` caused
+  SQL to be silently dropped for wrapped context arguments, contradicting
+  the tool's own contract.)
+- **Check the skip paths are exercised.** Where the tool records skips,
+  non-reconstructable input, or ignored directives, is there a test that
+  feeds a non-recognised form and asserts the skip *is* recorded?
+
+### 5. Concurrency and mutation (race conditions)
 
 If the PR introduces goroutines, shared state, mutexes, or tombstones:
 - Flag missing `-race` flag note or stress test recommendation
 - Note if the test suite embeds worker/goroutine patterns without a cleanup
   assertion
 
-### 5. Integration test presence
+### 6. Integration test presence
 
 For user-visible behaviour changes (new API params, new hook behaviour,
 changed CLI output):
@@ -65,7 +89,7 @@ changed CLI output):
 - Does an existing integration test cover the changed behaviour, or does
   the suite need a new case?
 
-### 6. Test helper quality
+### 7. Test helper quality
 
 - Test helpers that insert DB fixtures are clear about what they're setting up
   (a comment or self-documenting name)
