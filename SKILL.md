@@ -52,6 +52,26 @@ code diffs are fetched from GitHub.
   missing, vague, or does not explain the problem being solved, flag it
   explicitly in the review.
 
+### Self-review mode
+
+After fetching PR metadata, detect whether the PR is authored by the user
+running the skill:
+
+```sh
+gh api user --jq .login
+```
+
+If the PR author's login matches — i.e. **the PR is the reviewer's own work —
+switch to self-review mode**:
+- The review is never pushed to GitHub: skip Steps 5.5 and 6 entirely —
+  no batch decision table, no pending review, no comment drafting.
+- Still run the full lens review and write the report (Step 5).
+- Then hand the report to the `/check-review` command: tell the user the
+  report path and that they can prepare mitigations with
+  `/check-review <path-to-report>` (it feeds each comment to the
+  review-checker agent). Make sure the report's Finding Summary table is
+  complete — it is what check-review consumes.
+
 ## Configuration
 
 Check whether `~/.config/juju-pr-review/config.sh` exists.
@@ -101,10 +121,20 @@ the changed files:
 | PR description contains QA steps or mentions LXD/MicroK8s | L7 |
 
 Present the suggested set as a **single question** — not one question per
-lens, and not a statement that proceeds without asking:
+lens, and not a statement that proceeds without asking. Always remind the
+user of each lens's actual scope: spell out the lens name and focus next
+to its number — never refer to lenses by number alone, including the
+always-on set:
 
-> "L1+L2+L3 active. Suggesting L4+L5 based on the PR content (test files,
-> DB service code). Add L6/L7?"
+> "L1+L2+L3 active (L1 architecture alignment — layer boundaries, import
+> rules, transaction scope; L2 Go idioms — error handling, naming, godoc;
+> L3 Juju style & idioms — sqlair patterns, DDD conventions, test
+> structure). Suggesting L4 (test coverage — edge cases, missing
+> scenarios) + L5 (database & performance — N+1 queries, transaction
+> scope) based on the PR content (test files, DB service code). Add L6
+> (synchronization & concurrency — channel lifecycle, goroutine safety,
+> race conditions) and/or L7 (QA execution — local LXD/MicroK8s
+> validation, controller lifecycle)?"
 >
 > Options: Proceed with suggested | Add L6 | Add L7 | Add both
 
@@ -133,6 +163,22 @@ From the file list, identify:
 - Which layers are touched (`apiserver/`, `domain/`, `internal/worker/`, etc.)
 - What pattern the PR is implementing (new feature, refactor, bug fix)
 - Any predecessor PRs mentioned in the description that establish the pattern
+
+Also fetch any **existing reviews and review comments** on the PR — they
+are input to the review, not just noise:
+
+```sh
+gh api repos/<owner>/<repo>/pulls/<pr>/reviews --jq '.[] | {id, user: .user.login, state, submitted_at, body}'
+gh api repos/<owner>/<repo>/pulls/<pr>/comments --jq '.[] | {id, path, line, user: .user.login, body}'
+```
+
+Record what each prior review flagged or endorsed. When drafting
+comments (Steps 5.5–6):
+- Reference a related prior review or review comment in the comment's
+  `<details>` context block instead of restating it.
+- Do not post a finding that adds no value over an existing review
+  comment — only post if you bring specific line context, clarity, or
+  insight the prior comment lacks.
 
 ### Step 1.5 — Understand the change before judging it
 
@@ -236,10 +282,17 @@ Use the template below exactly.
 
 ### Step 5.5 — Batch decision for publishing
 
+**Skip this step in self-review mode** (own PR — see Input Contract):
+the report is handed to `/check-review` instead of being published.
+
 After the report is saved, ask the user if they want to publish findings to
 GitHub as a pending review. If yes, present **all** findings in a single table
 and collect decisions in **one** round-trip — never iterate one finding at a
 time.
+
+Draft the comment bodies here following the Step 6 comment rules — concise by
+default, context paragraph only when needed — so the preview column shows the
+exact text that will be posted.
 
 **Default actions and labels** (auto-assigned, user overrides in the table):
 
@@ -250,10 +303,18 @@ time.
 | Minor (style/convention) | post | **nitpick** |
 | Minor (missing test) | post | **todo** |
 | Minor (improvement suggestion) | post | **suggestion** |
+| Minor — test mechanically updated by a refactor (no behavioural change) | post | **suggestion** |
 | Info (observation/question) | skip | — |
 | Info (positive note) | skip | — |
 
-**Conventional Comment labels** ([conventionalcomments.org](https://conventionalcomments.org/)):
+A test that was just mechanically refactored (renamed call, moved
+helper) is not the right place to demand deeper behavioural assertions —
+suggest, don't block; the behavioural gap belongs where the behaviour
+lives (e.g. a state-layer test).
+
+**Conventional Comment labels** ([conventionalcomments.org](https://conventionalcomments.org/)),
+written as `type(scope)` in comment bodies — the scope in parentheses is
+the area of concern (`test`, `diff`, `state`, `service`, `facade`, ...):
 
 | Label | Meaning |
 |-------|---------|
@@ -289,6 +350,9 @@ question with an optional follow-up for edits.
 
 ### Step 6 — Publish to GitHub
 
+**Skip this step in self-review mode** (own PR — see Input Contract):
+never push the review to GitHub; the report goes to `/check-review`.
+
 Post the approved comments as a **pending** review on the PR using
 [`scripts/post_review.py`](./scripts/post_review.py). This script handles the
 GitHub API correctly — do not call `gh api` manually for review creation.
@@ -308,18 +372,43 @@ The comments JSON file format:
     {
       "path": "internal/migration/secretrewrite.go",
       "line": 33,
-      "body": "**nitpick:** The emptiness check uses `== nil` rather than..."
+      "body": "**nitpick(diff):** use `len(s) == 0` instead of `s == nil`.\n\n<details>\n<summary>AI sloppy context</summary>\n\nA non-nil empty map passes the `== nil` check, so the rewrite would be skipped.\n\n</details>"
     }
   ]
 }
 ```
 
-**Rules for comment bodies:**
-- Start each comment with the conventional label in bold: `**nitpick:**`, `**todo:**`, etc.
-- Keep comments concise — 2-5 sentences max. Quote the relevant code, state the
-  issue, suggest a fix.
-- For multi-line comments, include `start_line` in the JSON (must be on the same
-  side of the diff as `line`).
+**Rules for comment bodies** (conventional comments + AI context block):
+- Start each comment with the conventional label and an optional scope
+  in bold: `**issue:**`, `**todo(test):**`, `**nitpick(diff):**`,
+  `**suggestion(state):**`, etc. The type comes from the Step 5.5 label
+  table; the scope in parentheses names the area of concern.
+- After the label, one short, concise phrase focused on what we should
+  do, what is expected, or an insight — a single sentence, no more.
+- If there is useful context, follow with a collapsed block:
+
+  ```
+  <details>
+  <summary>AI sloppy context</summary>
+
+  <Structured context for easy reading: why it matters, other relevant
+  pieces of code or files, what you suggest to do, references to prior
+  review comments on this PR. Short paragraphs or bullet lists. Be as
+  concise as possible.>
+  </details>
+  ```
+
+  The details block supplements the one-phrase header; the first line
+  must stand alone without it.
+- Reference related prior reviews/review comments in the details block
+  rather than restating them; skip posting when you add no specific
+  line context, clarity, or insight over them.
+- **Inline comments must anchor to files in the PR diff** — GitHub
+  rejects comments on unchanged files. For findings outside the diff,
+  put them in the review body instead (`--body`), stating the
+  `File:Line` in the text.
+- For multi-line comments, include `start_line` in the JSON (must be on
+  the same side of the diff as `line`).
 
 **Before posting:**
 1. Get the head SHA: `gh api repos/<owner>/<repo>/pulls/<pr> --jq '.head.sha'`
@@ -330,6 +419,13 @@ The comments JSON file format:
 **After posting:**
 - Confirm the review URL to the user
 - Clean up any temp JSON files
+
+**Amending a posted pending review:**
+- Review comments inside a pending review cannot be edited via the API
+  (`PATCH` on the comment returns 404 — pending comments only exist
+  within the review until submission). To change a comment, delete and
+  recreate the whole pending review with `post_review.py --force`,
+  applying the edits to the regenerated comments.
 
 ---
 

@@ -98,16 +98,19 @@ def post_pending_review(
     pr_number: int,
     commit_id: str,
     comments: list,
+    body: str | None = None,
 ) -> dict:
     """Post a pending review with inline comments.
 
     Key insight: the REST API rejects ``"event": "PENDING"`` (HTTP 422).
     Omitting the ``event`` field entirely creates a pending review.
     """
-    payload = {
+    payload: dict = {
         "commit_id": commit_id,
         "comments": comments,
     }
+    if body:
+        payload["body"] = body
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, dir="/tmp"
@@ -144,6 +147,10 @@ def main() -> int:
     parser.add_argument(
         "--comments", required=True,
         help="Path to JSON file with commit_id and comments array",
+    )
+    parser.add_argument(
+        "--body", default=None,
+        help="Optional top-level review body (Markdown)",
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -199,7 +206,8 @@ def main() -> int:
 
     print(f"Posting {len(comments)} comment(s) as pending review...", file=sys.stderr)
     result = post_pending_review(
-        args.owner, args.repo, args.pr, commit_id, comments
+        args.owner, args.repo, args.pr, commit_id, comments,
+        body=args.body,
     )
 
     url = result.get("html_url", "")
