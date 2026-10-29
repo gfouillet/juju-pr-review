@@ -66,11 +66,14 @@ switch to self-review mode**:
 - The review is never pushed to GitHub: skip Steps 5.5 and 6 entirely —
   no batch decision table, no pending review, no comment drafting.
 - Still run the full lens review and write the report (Step 5).
-- Then hand the report to the `/check-review` command: tell the user the
-  report path and that they can prepare mitigations with
-  `/check-review <path-to-report>` (it feeds each comment to the
-  review-checker agent). Make sure the report's Finding Summary table is
-  complete — it is what check-review consumes.
+- Then hand the report over for triage: tell the user the report path and
+  that they can prepare mitigations with the `check-review` skill —
+  through a `/check-review <path-to-report>` command if their harness
+  defines one, or by simply asking the agent to triage the report with
+  the skill. Make sure the report's Finding Summary table is complete —
+  it is what check-review consumes. Mitigations are folded into the
+  existing commits (amend, or fixup + autosquash), never added as new
+  commits.
 
 ## Configuration
 
