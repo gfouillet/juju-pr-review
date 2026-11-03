@@ -66,6 +66,12 @@ switch to self-review mode**:
 - The review is never pushed to GitHub: skip Steps 5.5 and 6 entirely —
   no batch decision table, no pending review, no comment drafting.
 - Still run the full lens review and write the report (Step 5).
+- **Run the red-team pass (Step 5.1) before handing over.** Self-review has
+  a systematic blind spot: it validates the author's own design choices
+  instead of challenging them (e.g. PR #23701's report listed the
+  report-only CI step under "What the PR Does Well"; an external bot later
+  flagged the same mechanism as "the lint never gates anything"). The
+  red-team pass exists to break that loop.
 - Then hand the report over for triage: tell the user the report path and
   that they can prepare mitigations with the `check-review` skill —
   through a `/check-review <path-to-report>` command if their harness
@@ -97,7 +103,7 @@ Use `$JUJU_REVIEW_REPORTS` as the report output directory throughout.
 
 ## Review Lenses
 
-Seven lenses are available. L1+L2+L3 are always active. L4–L7 are suggested
+Eight lenses are available. L1+L2+L3 are always active. L4–L8 are suggested
 based on the PR file list — present the suggestion as a single question and
 wait for the user to confirm or adjust.
 
@@ -106,10 +112,11 @@ wait for the user to confirm or adjust.
 | L1 | Architecture alignment | Layer boundaries, import rules, transaction scope, adjacent code path impact | on |
 | L2 | Go idioms | Error handling, naming, interfaces, context, godoc | on |
 | L3 | Juju style & idioms | sqlair patterns, DDD conventions, test structure, gci | on |
-| L4 | Test coverage | Edge cases, missing scenarios, stress candidates | suggested |
+| L4 | Test coverage | Edge cases, missing scenarios, stress candidates, tool-contract violations | suggested |
 | L5 | Database & performance | N+1 queries, bulk ops, chunking, transaction scope | suggested |
 | L6 | Synchronization & concurrency | Channel lifecycle, goroutine safety, worker shutdown, race conditions | suggested |
 | L7 | QA execution | Local LXD/MicroK8s validation, build, controller lifecycle | suggested |
+| L8 | CI & build wiring | Workflow gating, guard conditions on non-PR events, action pinning, Makefile hygiene, fail-loud environment drift | suggested |
 
 ### Suggestion rules
 
@@ -122,6 +129,7 @@ the changed files:
 | Any file under `domain/*/state/`, `domain/*/service/`, or containing SQL/sqlair queries | L5 |
 | Any file under `worker/`, `internal/worker/`, or using channels/goroutines | L6 |
 | PR description contains QA steps or mentions LXD/MicroK8s | L7 |
+| Any file under `.github/workflows/`, any `Makefile`/`*.mk` change, or the PR adds/modifies a CI job, lint target, or version pin | L8 |
 
 Present the suggested set as a **single question** — not one question per
 lens, and not a statement that proceeds without asking. Always remind the
@@ -233,6 +241,7 @@ Pass each agent:
 | L5   | `references/lens-db-perf.md` |
 | L6   | `references/lens-concurrency.md` |
 | L7   | `references/lens-qa.md` |
+| L8   | `references/lens-ci-build.md` |
 
 Each reference file contains the focused checklist and agent prompt for that
 lens. Read it before composing the subagent prompt.
@@ -268,6 +277,18 @@ context misreads before they end up in the final report.
    severity, prefer the more conservative (higher) assessment after verification.
 3. **Separate positives** — collect "what the PR does well" notes from all
    agents into their own section.
+4. **Check the lens-set severity ceiling** — the behavioural lenses are
+   L1 (blast radius), L4 (invariants and edge cases), L5, L6, and L8 (CI
+   gating and environment drift). The style lenses L2/L3 structurally top
+   out at Minor: no idiom finding can be a correctness bug. If the active
+   lens set is style-only, no Critical/Major finding is *possible*, so
+   "no Critical or Major findings" is a statement about the lens set, not
+   about the PR. In that case the report header and the final verdict must
+   say so explicitly (see the report template) — an unqualified
+   "approve-ready" from a style-only review overstates the result.
+   (On PR #23701 a style-only self-review — L1/L4 omitted as "standalone
+   tool" — returned "approve-ready" while a later external bot review found
+   a correctness bug, a non-gating CI step, and a performance issue.)
 
 **Severity scale:**
 
@@ -282,6 +303,33 @@ context misreads before they end up in the final report.
 
 Save the report to `$JUJU_REVIEW_REPORTS/pr-<N>-review.md`.
 Use the template below exactly.
+
+### Step 5.1 — Red-team pass
+
+**Mandatory in self-review mode** (see Input Contract); recommended for any
+review where all findings landed at Minor or below.
+
+After the report is written, run one adversarial step on it:
+
+1. Adopt the persona of a skeptical external reviewer with 30 minutes and
+   zero ego investment in the PR. Ask: what would they flag that this
+   report does not? Think in failure modes, not in style:
+   - What does this PR claim to enforce or guarantee, and where could that
+     claim be silently false? (A check that cannot fail, a contract the
+     code silently violates, a pin that only holds in CI.)
+   - What would the harshest competent reviewer say about the design
+     choices the report currently *praises*?
+   - List at least 3 candidates — do not self-censor because the report
+     already endorses the choice.
+2. Verify each candidate against the code with the same rules as Step 3
+   (targeted read of the actual files; downgrade or discard what does not
+   hold up).
+3. Fold confirmed items into the report with proper severity, and remove
+   or soften any "What the PR Does Well" bullet the pass contradicted.
+
+The pass is a behaviour change, not just new findings: a self-review report
+must never present the author's own design choices as unqualified strengths
+without at least having tried to break them.
 
 ### Step 5.5 — Batch decision for publishing
 
@@ -443,6 +491,11 @@ The comments JSON file format:
 **Changes:** +<additions> / -<deletions> across <N> files
 **Date reviewed:** <YYYY-MM-DD>
 **Lenses applied:** <L1, L2, L3 ...>
+**Lens coverage:** <include ONLY when the active lens set is style-only
+(L2/L3 without any of L1/L4/L5/L6/L8): state that no behavioural or
+correctness dimension was reviewed, e.g. "style lenses only — no
+behavioural lens was active; absence of Critical/Major findings reflects
+the lens set, not the PR">
 
 ---
 
@@ -543,5 +596,7 @@ the section entirely if there are none.>
 ## Final Verdict
 
 **Verdict:** approve-ready | needs changes | blocked by missing clarity
-**Justification:** <one sentence>
+**Justification:** <one sentence; if the active lens set was style-only, the
+verdict MUST be qualified — e.g. "approve-ready for the dimensions
+reviewed; no behavioural lens was active">
 ```
