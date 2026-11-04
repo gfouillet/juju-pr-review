@@ -423,7 +423,7 @@ The comments JSON file format:
     {
       "path": "internal/migration/secretrewrite.go",
       "line": 33,
-      "body": "**nitpick(diff):** use `len(s) == 0` instead of `s == nil`.\n\n<details>\n<summary>AI sloppy context</summary>\n\nA non-nil empty map passes the `== nil` check, so the rewrite would be skipped.\n\n</details>"
+      "body": "**nitpick(diff):** use `len(s) == 0` instead of `s == nil`.\n\n<details>\n<summary>More context</summary>\n\nA non-nil empty map passes the `== nil` check, so the rewrite would be skipped.\n\n</details>"
     }
   ]
 }
@@ -440,7 +440,7 @@ The comments JSON file format:
 
   ```
   <details>
-  <summary>AI sloppy context</summary>
+  <summary>More context</summary>
 
   <Structured context for easy reading: why it matters, other relevant
   pieces of code or files, what you suggest to do, references to prior
