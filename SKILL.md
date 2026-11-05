@@ -135,9 +135,12 @@ Use `$JUJU_REVIEW_REPORTS` as the report output directory throughout.
 
 ## Review Lenses
 
-Eight lenses are available. L1+L2+L3 are always active. L4–L8 are suggested
+Nine lenses are available. L1+L2+L3 are always active. L4–L8 are suggested
 based on the PR file list — present the suggestion as a single question and
-wait for the user to confirm or adjust.
+wait for the user to confirm or adjust. L9 (cross-version regression) is
+**never auto-suggested**: ask the intake question below before starting the
+review, and activate it only when the user says yes and names the comparison
+version.
 
 | ID | Lens | Focus | Default |
 |----|------|-------|:-------:|
@@ -149,6 +152,37 @@ wait for the user to confirm or adjust.
 | L6 | Synchronization & concurrency | Channel lifecycle, goroutine safety, worker shutdown, race conditions | suggested |
 | L7 | QA execution | Local LXD/MicroK8s validation, build, controller lifecycle | suggested |
 | L8 | CI & build wiring | Workflow gating, guard conditions on non-PR events, action pinning, Makefile hygiene, fail-loud environment drift | suggested |
+| L9 | Cross-version regression | Behavioural parity against a named prior Juju release (major or minor): config precedence, attribute routing, storage/network semantics, CLI/API defaults, user-facing workflows | ask |
+
+### Intake question — L9 cross-version regression
+
+Ask this **before** starting the review, together with the base-ref/author-intent
+intake (branch mode) or the PR context intake. It is a separate question from
+the L4–L8 suggestion question. Ask two things:
+
+1. **Do we need a cross-version regression check?** Activate L9 when the PR:
+   - adds new functionality that will later replace or supersede existing
+     functionality,
+   - replaces or removes an existing feature/behaviour (e.g. HA in 4.2
+     replacing HA in 4.1),
+   - changes configuration precedence, attribute routing, or defaults,
+   - changes a user-facing workflow or CLI/API surface.
+
+   Skip L9 for pure refactors, mechanical renames, isolated bug fixes with no
+   semantic change, and test-only changes — there is no meaningful old
+   behaviour to compare.
+
+2. **Against which version should we compare?** It does not have to be the
+   previous major release. Accept a git tag, branch, or remote ref:
+   - a 4.2 feature replacing a 4.1 feature → compare against `4.1`;
+   - a change affecting 3.x compatibility → compare against `3.6`;
+   - if the user is unsure, suggest the previous release line of the base
+     branch (base `4.0` → `3.6`; base `4.2` → `4.1`).
+
+If the user says yes, record the target version and pass it to the L9 subagent
+in Step 2. If the user says no or does not answer, do not run L9 and note in
+the report that it was not requested. L9 is never mandatory and must not be
+suggested from file patterns alone.
 
 ### Suggestion rules
 
@@ -162,6 +196,9 @@ the changed files:
 | Any file under `worker/`, `internal/worker/`, or using channels/goroutines | L6 |
 | PR description contains QA steps or mentions LXD/MicroK8s | L7 |
 | Any file under `.github/workflows/`, any `Makefile`/`*.mk` change, or the PR adds/modifies a CI job, lint target, or version pin | L8 |
+
+L9 is deliberately absent from this table: no file pattern can tell whether a
+change replaces prior behaviour. Ask the L9 intake question instead.
 
 Present the suggested set as a **single question** — not one question per
 lens, and not a statement that proceeds without asking. Always remind the
@@ -264,6 +301,10 @@ Pass each agent:
 5. The path to its lens reference file
 6. Which AGENTS.md files to read (see below)
 
+For L9, also pass the comparison version/ref supplied at intake (a git tag,
+branch, or remote ref) and the specific workflow/contract to compare. If the
+user did not supply a version, do not spawn L9.
+
 **AGENTS.md files to give each agent** (paths relative to the repo root):
 - `AGENTS.architecture-rules.md` — layering, import rules, concurrency rules
 - `AGENTS.core-domain-rules.md` — DDD glossary, lifecycle, watcher patterns
@@ -284,6 +325,7 @@ they conflict with the AGENTS files, the AGENTS files win.
 | L6   | `references/lens-concurrency.md` |
 | L7   | `references/lens-qa.md` |
 | L8   | `references/lens-ci-build.md` |
+| L9   | `references/lens-version-regression.md` |
 
 Each reference file contains the focused checklist and agent prompt for that
 lens. Read it before composing the subagent prompt.
@@ -323,8 +365,9 @@ context misreads before they end up in the final report.
 3. **Separate positives** — collect "what the PR does well" notes from all
    agents into their own section.
 4. **Check the lens-set severity ceiling** — the behavioural lenses are
-   L1 (blast radius), L4 (invariants and edge cases), L5, L6, and L8 (CI
-   gating and environment drift). The style lenses L2/L3 structurally top
+   L1 (blast radius), L4 (invariants and edge cases), L5, L6, L8 (CI
+   gating and environment drift), and L9 (cross-version regression, when
+   active). The style lenses L2/L3 structurally top
    out at Minor: no idiom finding can be a correctness bug. If the active
    lens set is style-only, no Critical/Major finding is *possible*, so
    "no Critical or Major findings" is a statement about the lens set, not
@@ -559,7 +602,7 @@ date, and lens fields).
 **Date reviewed:** <YYYY-MM-DD>
 **Lenses applied:** <L1, L2, L3 ...>
 **Lens coverage:** <include ONLY when the active lens set is style-only
-(L2/L3 without any of L1/L4/L5/L6/L8): state that no behavioural or
+(L2/L3 without any of L1/L4/L5/L6/L8/L9): state that no behavioural or
 correctness dimension was reviewed, e.g. "style lenses only — no
 behavioural lens was active; absence of Critical/Major findings reflects
 the lens set, not the PR">
