@@ -88,6 +88,58 @@ conventions and naming expectations.
 - No unnecessary type conversions or assertions
 - `any` used instead of `interface{}` in code that targets Go 1.18+
 
+### 11. Identifier visibility
+
+- An identifier exported only for tests or for a single package should be
+  unexported.
+- An identifier another package needs should be exported from its owning
+  package, not duplicated to avoid exporting it.
+- Every new exported name is API surface: check that it is part of the
+  intended contract, not an implementation detail that leaked.
+
+### 12. Unnecessary code and dead branches
+
+For each new method, branch, and fallback, ask whether it is necessary:
+- A trivial method (1–3 lines) with a single call site can be inlined.
+- A branch or fallback whose precondition cannot occur is dead code. Trace
+  reachability: is the input validated upstream, is the call on a retry path,
+  does the state make the condition impossible? If not reachable, remove it or
+  document why it is a deliberate guard.
+- Defensive checks that duplicate an invariant already enforced by the caller
+  add noise and hide the real contract.
+- Newly introduced `TODO`, `FIXME`, stubs that return zero values, methods
+  that panic with "not implemented", and flags added without a consumer are
+  unfinished work: flag them as Major (Critical if the unfinished path is
+  reachable from production code), not as suggestions.
+
+### 13. Logic errors
+
+- Off-by-one errors in indices, slice bounds, chunk sizes, and pagination.
+- Operator precedence mistakes in compound conditions; add parentheses when
+  the intent is not obvious.
+- Inverted conditions, wrong sentinel comparisons, and copy-paste variable
+  reuse.
+
+### 14. Error-routing fidelity in validation blocks
+
+For every input-validation or parsing block, do not only check that errors are
+wrapped idiomatically — check that each input shape produces the most accurate
+diagnosis. Fail-closed is not the same as fail-correct:
+
+- Multipass decoders are the classic case: when a parser decodes the primary
+  payload and then reads again to reject trailing content, a strictness mode
+  (`yaml.KnownFields`, schema validation, type assertions) on the trailing
+  pass can shadow the semantic error. A second document carrying unknown keys
+  must be reported as "too many documents", not as a parse failure. Trace
+  which guard fires for each shape.
+- When two guards can both fire (structure check, schema check, value check),
+  verify the more specific diagnosis wins for each input, and that guard
+  ordering matches diagnostic usefulness.
+- Flag as Minor when the failure itself is caught but the message
+  misclassifies it — the operator is misled about what to fix. Raise to Major
+  when the misclassification is reachable by a common input and the message
+  invites a wrong remedy.
+
 ## Output format
 
 Return a structured list. For each finding:

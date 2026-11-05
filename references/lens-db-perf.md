@@ -87,6 +87,39 @@ be done:
 
 Flag any `st.Prepare(...)` call found inside a `for` loop.
 
+### 8. Query and filter inclusion/exclusion
+
+For every new or changed SQL query, WHERE clause, or in-memory filter,
+enumerate who is included and who is excluded, then trace what happens to each
+excluded category downstream. Check specifically:
+
+- Disabled and deleted users/entities
+- External (JWT/OIDC) users that may have no row in the local user table
+- Nil, empty, and zero values
+- Entities created by a different lifecycle path (e.g. imported vs locally
+  created)
+- Rows that depend on a JOIN that may not match
+- Existing rows during a type or schema migration
+
+If an excluded category is silently dropped rather than handled or reported,
+flag it as Major.
+
+### 9. Schema patch evolution
+
+When a PR edits an existing schema patch file (`NNNN-*.sql`) in place, first
+check the release status of the version that shipped it:
+
+- **Betas** carry no in-place upgrade obligation — until RC, base patch files
+  may be edited directly and a new incremental patch is **not** required.
+- **RC and final** releases must upgrade in place within the same minor —
+  require a new patch file (e.g. `DROP INDEX IF EXISTS ...; CREATE ...`)
+  instead of the in-place edit.
+- **Across minors**, upgrades always go through migration: model data is
+  loaded into a database built with the new schema, so in-place patch edits do
+  not affect cross-minor upgrades at all.
+
+Never raise an in-place edit as Critical for a file that shipped only in beta.
+
 ## Output format
 
 Return a structured list. For each finding:
