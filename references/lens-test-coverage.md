@@ -98,6 +98,31 @@ changed CLI output):
 - If multiple tests share the same fixture setup, it's extracted into a helper
   (no copy-paste)
 
+### 8. Coverage against actual behaviour, not just presence
+
+Do not stop at "is there a test?". Enumerate the distinct input shapes the
+code accepts and the distinct output shapes it emits, then check that each one
+is exercised:
+
+- Every output format produced by one code path and consumed by another —
+  does a test assert the consumer handles it?
+- Round-trip operations: test both directions and every shape, not just the
+  direction or shape the author was fixing.
+- Error paths mentioned in comments, or returned but never triggered by a
+  test.
+- A test that covers only the shape the author was fixing gives false
+  confidence; say so explicitly instead of treating the area as covered.
+- **Error-message routing at guard boundaries**: for validation blocks with
+  multiple guards, a test that asserts only "an error occurs" can mask a
+  misdiagnosis (the wrong guard fires). Pin the message itself
+  (`tc.ErrorMatches`) at guard boundaries — especially where a strictness
+  mode (e.g. `yaml.KnownFields`) is applied to a secondary decode pass.
+- A shape class you identified as unexercised is not automatically
+  "fail-closed through existing guards": before downgrading it to Info,
+  check *which* guard fires and whether that is the correct diagnosis. If
+  you cannot verify the routing from the code, flag the missing
+  message-level test as Minor, not Info.
+
 ## What to explicitly not flag
 
 - Test style issues (checker choice, comment format) — that's L3

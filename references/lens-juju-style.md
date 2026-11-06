@@ -115,6 +115,21 @@ that mirrors one in a sibling package), check:
   (`// mirrors (*domain/foo/state.State).MethodName`)
 - Any divergence from the original is intentional and explained
 
+### 9. IAAS/CAAS jargon in new naming and messages
+
+IAAS and CAAS are internal Juju jargon and are opaque to users. No new log
+message, error message, user-facing string, or identifier should adopt them.
+Prefer "K8s" for CAAS in new names (e.g. `K8sDeployer`, not `CAASDeployer`).
+Flag every new occurrence introduced by the PR with the concrete replacement.
+
+### 10. State method naming consistency
+
+In `domain/*/state` packages, "Get" and "List" are not different operations —
+both select things. Do not let a new method use `Get` where its siblings use
+`List` (or vice versa); match the prevailing verb in that package. Prefer
+`Delete` over `Clear` for persistence-layer removal (`DeleteThings` is clearer
+than `ClearThings`). Flag inconsistencies and give the concrete suggested name.
+
 ## Output format
 
 Return a structured list. For each finding:

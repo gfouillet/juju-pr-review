@@ -3,13 +3,13 @@ name: juju-pr-review
 description: >
   Deep multi-lens code review for Juju PRs using parallel specialist agents.
   Use whenever asked to review a PR, do a code review, critique code changes,
-  assess code quality, or check a branch before merge in the Juju repository.
-  Produces a structured Markdown report with findings sorted by severity.
+  or assess code quality in the Juju repository. Produces a structured
+  Markdown report with findings sorted by severity.
   Trigger on: "review this PR", "review PR #N", "code review for #XXXX",
-  "critique my changes", "review my branch", "look at the code", or any
-  request to assess quality of Juju code changes — even if the user doesn't
-  say "review" explicitly. If the user is in a Juju repo and mentions a PR
-  number or asks about their changes, use this skill.
+  "critique my changes", "look at the code", or any request to assess quality
+  of Juju code changes — even if the user doesn't say "review" explicitly.
+  If no PR exists for the current branch, review the branch against its base
+  instead (branch mode).
 ---
 
 # Juju PR Review Skill
@@ -43,14 +43,46 @@ code diffs are fetched from GitHub.
   `repo`, and `pr_number`.
 - If no PR number was given, try the current branch: run `gh pr view` without
   a number and let `gh` infer it.
-- If `gh` can't find a PR, fall back to reading `git log --oneline -5` and
-  `git diff --name-only origin/HEAD...HEAD` to understand what changed.
+- If `gh` can't find a PR, switch to **branch mode** (below) instead of
+  guessing the base from `origin/HEAD`.
 - If the repository is not available locally, say so and either locate another
   local checkout that matches the PR repository or ask before doing any
   networked read-only fetch or clone.
 - **Missing or vague PR description is a finding.** If the PR description is
   missing, vague, or does not explain the problem being solved, flag it
   explicitly in the review.
+
+### Branch mode (no PR yet)
+
+Enter branch mode whenever `gh pr view` finds no PR for the current branch.
+The user may also ask for a pre-PR branch review explicitly.
+
+Establish the following before reviewing (ask the user where needed):
+
+- **Base ref** — `<remote>/<base>`, e.g. `upstream/4.0`. Never assume
+  `origin`: Juju reviews usually target release branches (`4.0`, `3.6`), not
+  the repository default. Ask the user if it is not supplied, then fetch it:
+  `git fetch <remote> <base>`.
+- **Author intent** *(optional)* — a one-line description of what the branch is
+  meant to achieve. Ask for it if absent; do not invent one.
+
+In branch mode:
+
+- Do not make further PR API calls; there is no PR to read.
+- Collect the diff with the triple-dot form so unrelated commits that landed on
+  the base branch are excluded:
+
+  ```sh
+  git diff <remote>/<base>...HEAD
+  git diff --stat <remote>/<base>...HEAD
+  git diff --name-only <remote>/<base>...HEAD
+  ```
+
+- Read the full diff and every changed file before forming any opinion.
+- Skip prior-review fetching, self-review detection, and Steps 5.5 and 6.
+  Nothing is published to GitHub; the report is the deliverable.
+- Run the red-team pass (Step 5.1) before handing over: a pre-PR review has the
+  same author-bias blind spot as a self-review.
 
 ### Self-review mode
 
@@ -103,20 +135,54 @@ Use `$JUJU_REVIEW_REPORTS` as the report output directory throughout.
 
 ## Review Lenses
 
-Eight lenses are available. L1+L2+L3 are always active. L4–L8 are suggested
+Nine lenses are available. L1+L2+L3 are always active. L4–L8 are suggested
 based on the PR file list — present the suggestion as a single question and
-wait for the user to confirm or adjust.
+wait for the user to confirm or adjust. L9 (cross-version regression) is
+**never auto-suggested**: ask the intake question below before starting the
+review, and activate it only when the user says yes and names the comparison
+version.
 
 | ID | Lens | Focus | Default |
 |----|------|-------|:-------:|
-| L1 | Architecture alignment | Layer boundaries, import rules, transaction scope, adjacent code path impact | on |
-| L2 | Go idioms | Error handling, naming, interfaces, context, godoc | on |
-| L3 | Juju style & idioms | sqlair patterns, DDD conventions, test structure, gci | on |
-| L4 | Test coverage | Edge cases, missing scenarios, stress candidates, tool-contract violations | suggested |
-| L5 | Database & performance | N+1 queries, bulk ops, chunking, transaction scope | suggested |
+| L1 | Architecture alignment | Layer boundaries, import rules, `core` placement (no needless shallow helpers), transaction scope, adjacent code path impact, Juju invariants (controller app, migration, cross-DB) | on |
+| L2 | Go idioms | Error handling, naming, interfaces, context, godoc, dead code, logic errors | on |
+| L3 | Juju style & idioms | sqlair patterns, DDD conventions, test structure, gci, state naming, jargon | on |
+| L4 | Test coverage | Edge cases, missing scenarios, shape coverage, stress candidates, tool-contract violations | suggested |
+| L5 | Database & performance | N+1 queries, bulk ops, chunking, transaction scope, query filters, schema patches | suggested |
 | L6 | Synchronization & concurrency | Channel lifecycle, goroutine safety, worker shutdown, race conditions | suggested |
 | L7 | QA execution | Local LXD/MicroK8s validation, build, controller lifecycle | suggested |
 | L8 | CI & build wiring | Workflow gating, guard conditions on non-PR events, action pinning, Makefile hygiene, fail-loud environment drift | suggested |
+| L9 | Cross-version regression | Behavioural parity against a named prior Juju release (major or minor): config precedence, attribute routing, storage/network semantics, CLI/API defaults, user-facing workflows | ask |
+
+### Intake question — L9 cross-version regression
+
+Ask this **before** starting the review, together with the base-ref/author-intent
+intake (branch mode) or the PR context intake. It is a separate question from
+the L4–L8 suggestion question. Ask two things:
+
+1. **Do we need a cross-version regression check?** Activate L9 when the PR:
+   - adds new functionality that will later replace or supersede existing
+     functionality,
+   - replaces or removes an existing feature/behaviour (e.g. HA in 4.2
+     replacing HA in 4.1),
+   - changes configuration precedence, attribute routing, or defaults,
+   - changes a user-facing workflow or CLI/API surface.
+
+   Skip L9 for pure refactors, mechanical renames, isolated bug fixes with no
+   semantic change, and test-only changes — there is no meaningful old
+   behaviour to compare.
+
+2. **Against which version should we compare?** It does not have to be the
+   previous major release. Accept a git tag, branch, or remote ref:
+   - a 4.2 feature replacing a 4.1 feature → compare against `4.1`;
+   - a change affecting 3.x compatibility → compare against `3.6`;
+   - if the user is unsure, suggest the previous release line of the base
+     branch (base `4.0` → `3.6`; base `4.2` → `4.1`).
+
+If the user says yes, record the target version and pass it to the L9 subagent
+in Step 2. If the user says no or does not answer, do not run L9 and note in
+the report that it was not requested. L9 is never mandatory and must not be
+suggested from file patterns alone.
 
 ### Suggestion rules
 
@@ -126,10 +192,13 @@ the changed files:
 | Condition | Suggest |
 |-----------|------|
 | Any `*_test.go` file in the diff | L4 |
-| Any file under `domain/*/state/`, `domain/*/service/`, or containing SQL/sqlair queries | L5 |
+| Any file under `domain/*/state/`, `domain/*/service/`, `domain/*/schema/`, any `*.sql` file, or containing SQL/sqlair queries | L5 |
 | Any file under `worker/`, `internal/worker/`, or using channels/goroutines | L6 |
 | PR description contains QA steps or mentions LXD/MicroK8s | L7 |
 | Any file under `.github/workflows/`, any `Makefile`/`*.mk` change, or the PR adds/modifies a CI job, lint target, or version pin | L8 |
+
+L9 is deliberately absent from this table: no file pattern can tell whether a
+change replaces prior behaviour. Ask the L9 intake question instead.
 
 Present the suggested set as a **single question** — not one question per
 lens, and not a statement that proceeds without asking. Always remind the
@@ -166,9 +235,10 @@ gh pr view --repo juju/juju --json number,title,body,headRefName,baseRefName,aut
 ```
 
 If no PR number was given, run this against the current branch (omit the PR
-number argument and let `gh` infer it). If `gh` can't find a PR, fall back to
-reading `git log --oneline -5` and `git diff --name-only origin/HEAD...HEAD`
-to understand what changed.
+number argument and let `gh` infer it). If `gh` can't find a PR, switch to
+branch mode: take the changed-file list from
+`git diff --name-only <remote>/<base>...HEAD` and skip the prior-review
+fetches.
 
 From the file list, identify:
 - Which layers are touched (`apiserver/`, `domain/`, `internal/worker/`, etc.)
@@ -193,8 +263,10 @@ comments (Steps 5.5–6):
 
 ### Step 1.5 — Understand the change before judging it
 
-Read the PR description, the diff, and the touched code paths together. Do not
-spawn review agents until you can answer these questions:
+Read the PR description, the diff, and the touched code paths together. Read
+the full diff and every changed file — not a sample, and not just the files
+that look interesting. Do not spawn review agents until you can answer these
+questions:
 
 - What is the **claimed problem** the PR says it solves?
 - What is the **actual behavior being changed**?
@@ -205,6 +277,10 @@ If the PR description is missing, vague, or does not explain the problem, flag
 it as a finding (see Input Contract). If there is a mismatch between the
 description and what the code actually does, note it — it will be passed to
 all subagents as context so they can verify alignment.
+
+In branch mode, the author intent supplied by the user takes the place of the
+PR description. If none was supplied, say so explicitly; the scope and
+alignment questions above still apply.
 
 The output of this step is a short "change understanding" summary that is
 included in every subagent prompt.
@@ -218,17 +294,24 @@ Spawn one agent per selected lens **in the same turn** (parallel). Each agent:
 - Returns a structured list of findings
 
 Pass each agent:
-1. The PR's file list (from step 1)
-2. The PR description / purpose
+1. The PR's file list (from step 1) — in branch mode, from the diff name list
+2. The PR description / purpose — in branch mode, the author intent
 3. The "change understanding" summary (from step 1.5)
-4. The base branch (e.g. `4.0`) so it can compare patterns
+4. The base branch and remote (e.g. `upstream/4.0`) so it can compare patterns
 5. The path to its lens reference file
 6. Which AGENTS.md files to read (see below)
+
+For L9, also pass the comparison version/ref supplied at intake (a git tag,
+branch, or remote ref) and the specific workflow/contract to compare. If the
+user did not supply a version, do not spawn L9.
 
 **AGENTS.md files to give each agent** (paths relative to the repo root):
 - `AGENTS.architecture-rules.md` — layering, import rules, concurrency rules
 - `AGENTS.core-domain-rules.md` — DDD glossary, lifecycle, watcher patterns
 - `AGENTS.md` — unit test conventions, build instructions, formatting rules
+
+If the repository also ships `CODING.md` or `STYLE.md`, pass those too. Where
+they conflict with the AGENTS files, the AGENTS files win.
 
 **Lens reference files** (relative to this skill):
 
@@ -242,6 +325,7 @@ Pass each agent:
 | L6   | `references/lens-concurrency.md` |
 | L7   | `references/lens-qa.md` |
 | L8   | `references/lens-ci-build.md` |
+| L9   | `references/lens-version-regression.md` |
 
 Each reference file contains the focused checklist and agent prompt for that
 lens. Read it before composing the subagent prompt.
@@ -258,8 +342,11 @@ Major. For each one, do a targeted code read to confirm:
 **Verify line numbers from the local checkout, NOT from GitHub API.** Run:
 
 ```sh
-git diff origin/<base>...HEAD -- <file>
+git diff <remote>/<base>...HEAD -- <file>
 ```
+
+Use the remote that the PR was fetched from (`upstream`, `origin`, etc.) — do
+not assume `origin`. In branch mode, use the remote the user named.
 
 This gives the same diff hunk information without network calls. Match
 finding line numbers against the diff hunks to confirm they point at the
@@ -278,8 +365,9 @@ context misreads before they end up in the final report.
 3. **Separate positives** — collect "what the PR does well" notes from all
    agents into their own section.
 4. **Check the lens-set severity ceiling** — the behavioural lenses are
-   L1 (blast radius), L4 (invariants and edge cases), L5, L6, and L8 (CI
-   gating and environment drift). The style lenses L2/L3 structurally top
+   L1 (blast radius), L4 (invariants and edge cases), L5, L6, L8 (CI
+   gating and environment drift), and L9 (cross-version regression, when
+   active). The style lenses L2/L3 structurally top
    out at Minor: no idiom finding can be a correctness bug. If the active
    lens set is style-only, no Critical/Major finding is *possible*, so
    "no Critical or Major findings" is a statement about the lens set, not
@@ -289,6 +377,12 @@ context misreads before they end up in the final report.
    (On PR #23701 a style-only self-review — L1/L4 omitted as "standalone
    tool" — returned "approve-ready" while a later external bot review found
    a correctness bug, a non-gating CI step, and a performance issue.)
+5. **Assess scope** — if the PR bundles several distinct features, or spreads
+   a small change across many layers without justification, add a finding
+   recommending a split with concrete split points (which changes belong
+   together). Generated mocks, test files, and mechanical renames do not
+   count toward scope. Place it first in the Minor section unless the size
+   itself blocks review, in which case it is Major.
 
 **Severity scale:**
 
@@ -299,17 +393,27 @@ context misreads before they end up in the final report.
 | Minor | Nit or convention violation that should be fixed but won't block merge |
 | Info | Observation worth noting; no action required |
 
+A misdiagnosis bug — the operation fails closed but the error message points
+at the wrong cause (e.g. a parse error reported where a document-count error
+is due) — is Minor by default: the failure itself is caught. Raise it to Major
+when the wrong message invites a wrong remedy for a common input, or when it
+is the primary operator-facing diagnostic for the feature.
+
 ### Step 5 — Write the report
 
-Save the report to `$JUJU_REVIEW_REPORTS/pr-<N>-review.md`.
+Save the report to `$JUJU_REVIEW_REPORTS/pr-<N>-review.md`. In branch mode,
+save it to `$JUJU_REVIEW_REPORTS/branch-<branch>-review.md`.
 Use the template below exactly.
 
 ### Step 5.1 — Red-team pass
 
-**Mandatory in self-review mode** (see Input Contract); recommended for any
-review where all findings landed at Minor or below.
+**Mandatory in self-review and branch modes** (see Input Contract);
+recommended for any review where all findings landed at Minor or below.
 
-After the report is written, run one adversarial step on it:
+Run the pass as soon as the lens findings are merged (Step 4) — do not
+wait for a still-running L7 QA run: QA evidence is folded into the
+report when it arrives, and the red-team pass must not be gated on it.
+Run one adversarial pass over the merged findings and the report draft:
 
 1. Adopt the persona of a skeptical external reviewer with 30 minutes and
    zero ego investment in the PR. Ask: what would they flag that this
@@ -333,8 +437,9 @@ without at least having tried to break them.
 
 ### Step 5.5 — Batch decision for publishing
 
-**Skip this step in self-review mode** (own PR — see Input Contract):
-the report is handed to `/check-review` instead of being published.
+**Skip this step in self-review and branch modes** (own PR or no PR — see
+Input Contract): the report is handed to `/check-review` instead of being
+published, or simply written for a branch that has no PR.
 
 After the report is saved, ask the user if they want to publish findings to
 GitHub as a pending review. If yes, present **all** findings in a single table
@@ -401,8 +506,9 @@ question with an optional follow-up for edits.
 
 ### Step 6 — Publish to GitHub
 
-**Skip this step in self-review mode** (own PR — see Input Contract):
-never push the review to GitHub; the report goes to `/check-review`.
+**Skip this step in self-review and branch modes** (own PR or no PR — see
+Input Contract): never push the review to GitHub. In self-review the report
+goes to `/check-review`; in branch mode there is no PR to publish to.
 
 Post the approved comments as a **pending** review on the PR using
 [`scripts/post_review.py`](./scripts/post_review.py). This script handles the
@@ -482,6 +588,10 @@ The comments JSON file format:
 
 ## Report Template
 
+In branch mode, replace the PR header line with `# Branch <name> Review Report`
+and omit the PR number, title, and author fields (keep branch, base, changes,
+date, and lens fields).
+
 ```markdown
 # PR #XXXXX Review Report
 
@@ -492,7 +602,7 @@ The comments JSON file format:
 **Date reviewed:** <YYYY-MM-DD>
 **Lenses applied:** <L1, L2, L3 ...>
 **Lens coverage:** <include ONLY when the active lens set is style-only
-(L2/L3 without any of L1/L4/L5/L6/L8): state that no behavioural or
+(L2/L3 without any of L1/L4/L5/L6/L8/L9): state that no behavioural or
 correctness dimension was reviewed, e.g. "style lenses only — no
 behavioural lens was active; absence of Critical/Major findings reflects
 the lens set, not the PR">
